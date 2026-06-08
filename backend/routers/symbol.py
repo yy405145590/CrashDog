@@ -1,7 +1,9 @@
 import json
+import logging
 import shutil
 import uuid
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
@@ -21,6 +23,58 @@ from ..schemas import (
 from ..services.guid_extractor import scan_directory_for_guids
 
 router = APIRouter(prefix="/api/symbols", tags=["symbols"])
+logger = logging.getLogger(__name__)
+
+
+SYMBOL_KEEP_COUNT = 5
+SYMBOL_KEEP_DAYS = 2
+
+
+def _as_utc(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _delete_symbol_package(db: Session, sym: SymbolPackage):
+    db.query(CrashReport).filter_by(symbol_package_id=sym.id).update(
+        {"symbol_package_id": None}
+    )
+
+    store = Path(sym.store_path)
+    if store.exists():
+        shutil.rmtree(store)
+
+    db.delete(sym)
+
+
+def _cleanup_old_symbols_for_game(db: Session, game_name: str | None):
+    if not game_name:
+        return
+
+    symbols = (
+        db.query(SymbolPackage)
+        .filter_by(game_name=game_name, status="ready")
+        .order_by(SymbolPackage.upload_time.desc())
+        .all()
+    )
+    keep_ids = {sym.id for sym in symbols[:SYMBOL_KEEP_COUNT]}
+    keep_since = datetime.now(timezone.utc) - timedelta(days=SYMBOL_KEEP_DAYS)
+
+    for sym in symbols[SYMBOL_KEEP_COUNT:]:
+        if sym.id in keep_ids or _as_utc(sym.upload_time) >= keep_since:
+            continue
+
+        active = db.query(CrashReport).filter_by(
+            symbol_package_id=sym.id, status="analyzing"
+        ).count()
+        if active > 0:
+            logger.info("skip symbol cleanup for %s: active analyzing crashes=%s", sym.id, active)
+            continue
+
+        _delete_symbol_package(db, sym)
 
 
 @router.post("/upload", response_model=SymbolPackageSummary)
@@ -112,6 +166,12 @@ async def upload_symbol(
         sym.file_list = json.dumps(file_entries, ensure_ascii=False)
         sym.status = "ready"
         db.commit()
+        try:
+            _cleanup_old_symbols_for_game(db, sym.game_name)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("symbol cleanup failed for game_name=%s", sym.game_name)
         db.refresh(sym)
     except Exception as e:
         sym.status = "failed"
@@ -228,14 +288,6 @@ def delete_symbol(symbol_id: str, db: Session = Depends(get_db)):
     if active > 0:
         raise HTTPException(409, "该符号包正在被使用，无法删除")
 
-    db.query(CrashReport).filter_by(symbol_package_id=sym.id).update(
-        {"symbol_package_id": None}
-    )
-
-    store = Path(sym.store_path)
-    if store.exists():
-        shutil.rmtree(store)
-
-    db.delete(sym)
+    _delete_symbol_package(db, sym)
     db.commit()
     return {"detail": "符号包已删除"}
