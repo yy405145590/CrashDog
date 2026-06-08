@@ -1,0 +1,82 @@
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDEs & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python (Backend)
+__pycache__/
+*.py[cod]
+*$py.class
+env/
+venv/
+ENV/
+.env
+.venv
+*.log
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+
+# Node.js / Vue (Frontend)
+node_modules/
+dist/
+dist-ssr/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Unreal Engine (QingCheng)
+QingCheng/
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.xcodeproj
+*.xcworkspace
+.vs/
+
+# App Specific (CrashDog)
+/tmp/
+/uploads/
+backend/uploads/**
+!backend/uploads/
+!backend/uploads/.gitkeep
+/bin/
+/bin.zip
+/crashdog.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Crash dumps and collected reports
+UECC-*/
+backend/crashes/**
+!backend/crashes/
+!backend/crashes/.gitkeep
+*.dmp
+*.mdmp
+*.dump
+CrashContext.runtime-xml
+CrashReportClient.ini
+
+# Uploaded symbols / debug artifacts
+backend/symbols/**
+!backend/symbols/
+!backend/symbols/.gitkeep
+*.pdb
+*.sym
+*.exe
