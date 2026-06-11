@@ -73,7 +73,7 @@ Content-Type: multipart/form-data
 ### cURL 示例
 
 ```bash
-curl -X POST http://localhost:8000/api/symbols/upload \
+curl -X POST http://localhost:18000/api/symbols/upload \
   -F "file=@symbols.zip" \
   -F "game_name=QingCheng" \
   -F "build_version=1.0.23" \
@@ -87,7 +87,7 @@ curl -X POST http://localhost:8000/api/symbols/upload \
 ```python
 import requests
 
-url = "http://localhost:8000/api/symbols/upload"
+url = "http://localhost:18000/api/symbols/upload"
 files = {"file": ("symbols.zip", open("symbols.zip", "rb"), "application/zip")}
 data = {
     "game_name": "QingCheng",
@@ -179,13 +179,13 @@ GET /api/symbols
 
 ```bash
 # 查询全部
-curl http://localhost:8000/api/symbols
+curl http://localhost:18000/api/symbols
 
 # 按游戏名称过滤
-curl "http://localhost:8000/api/symbols?game_name=QingCheng"
+curl "http://localhost:18000/api/symbols?game_name=QingCheng"
 
 # 按平台过滤 + 搜索
-curl "http://localhost:8000/api/symbols?platform=Windows&search=1.0"
+curl "http://localhost:18000/api/symbols?platform=Windows&search=1.0"
 ```
 
 ---
