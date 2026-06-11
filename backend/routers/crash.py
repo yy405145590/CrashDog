@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from ..services.guid_extractor import extract_guids_from_dmp
 from ..services.symbolizer import resolve_pdb_path, symbolicate_minidump
 
 router = APIRouter(prefix="/api/crashes", tags=["crashes"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/upload", response_model=CrashSummary)
@@ -21,6 +23,7 @@ async def upload_crash(file: UploadFile, db: Session = Depends(get_db)):
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(400, "请上传 .zip 文件")
 
+    logger.info("Crash upload started: filename=%s", file.filename)
     config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     config.CRASH_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -28,17 +31,29 @@ async def upload_crash(file: UploadFile, db: Session = Depends(get_db)):
     with open(zip_path, "wb") as f:
         content = await file.read()
         f.write(content)
+    logger.info("Crash upload saved: filename=%s bytes=%s path=%s", file.filename, len(content), zip_path)
 
     try:
         extract_dir = extract_zip(zip_path, config.CRASH_DIR)
     except ValueError as e:
+        logger.warning("Crash zip rejected: filename=%s reason=%s", file.filename, e)
         zip_path.unlink(missing_ok=True)
         raise HTTPException(400, str(e))
 
     try:
         parsed = parse_crash_directory(extract_dir)
     except Exception as e:
+        logger.exception("Crash parse failed: filename=%s extract_dir=%s", file.filename, extract_dir)
         raise HTTPException(500, f"解析崩溃数据失败: {e}")
+
+    logger.info(
+        "Crash parsed: id=%s game=%s build=%s platform=%s has_minidump=%s",
+        parsed.get("id"),
+        parsed.get("game_name"),
+        parsed.get("build_version"),
+        parsed.get("platform"),
+        parsed.get("has_minidump"),
+    )
 
     existing = db.query(CrashReport).filter_by(id=parsed["id"]).first()
     if existing:
@@ -79,14 +94,25 @@ async def upload_crash(file: UploadFile, db: Session = Depends(get_db)):
 
     if module_guids:
         pdb_path, sym_pkg_id = resolve_pdb_path(module_guids, db)
+        logger.info(
+            "Crash symbolication started: crash_id=%s module_guid_count=%s pdb_path=%s symbol_package_id=%s",
+            parsed["id"],
+            len(module_guids),
+            pdb_path,
+            sym_pkg_id,
+        )
         sym_result = symbolicate_minidump(parsed["minidump_path"], pdb_search_path=pdb_path)
         if sym_result:
             crash.symbolicated_callstack = sym_result
             crash.symbol_package_id = sym_pkg_id
+            logger.info("Crash symbolication finished: crash_id=%s result_chars=%s", parsed["id"], len(sym_result))
+        else:
+            logger.warning("Crash symbolication returned no result: crash_id=%s", parsed["id"])
 
     db.add(crash)
     db.commit()
     db.refresh(crash)
+    logger.info("Crash upload completed: crash_id=%s", crash.id)
     return crash
 
 
@@ -128,6 +154,7 @@ def delete_crash(crash_id: str, db: Session = Depends(get_db)):
     if not crash:
         raise HTTPException(404, "崩溃记录不存在")
 
+    logger.info("Deleting crash: crash_id=%s", crash_id)
     if crash.extract_dir:
         p = Path(crash.extract_dir)
         if p.exists():
@@ -137,6 +164,7 @@ def delete_crash(crash_id: str, db: Session = Depends(get_db)):
 
     db.delete(crash)
     db.commit()
+    logger.info("Crash deleted: crash_id=%s", crash_id)
     return {"detail": "已删除"}
 
 
@@ -148,6 +176,7 @@ def resymbolicate(
 ):
     from ..models import SymbolPackage
 
+    logger.info("Crash resymbolication requested: crash_id=%s symbol_package_id=%s", crash_id, symbol_package_id)
     crash = db.query(CrashReport).filter_by(id=crash_id).first()
     if not crash:
         raise HTTPException(404, "崩溃记录不存在")
@@ -192,10 +221,12 @@ def resymbolicate(
         crash.symbolicated_callstack = result
         crash.symbol_package_id = pkg_id
         db.commit()
+        logger.info("Crash resymbolication completed: crash_id=%s symbol_package_id=%s", crash_id, pkg_id)
         return {
             "detail": "重新符号化完成",
             "symbol_package_id": pkg_id,
             "symbolicated_callstack": result,
         }
     else:
+        logger.warning("Crash resymbolication failed with empty CDB result: crash_id=%s pdb_path=%s", crash_id, pdb_path)
         raise HTTPException(500, "符号化失败，CDB 未返回结果")

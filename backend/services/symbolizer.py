@@ -1,3 +1,4 @@
+import logging
 import re
 import subprocess
 from pathlib import Path
@@ -5,13 +6,18 @@ from pathlib import Path
 from .. import config
 
 
+logger = logging.getLogger(__name__)
+
+
 def symbolicate_minidump(dmp_path: str, pdb_search_path: str | None = None) -> str | None:
     cdb = Path(config.CDB_PATH)
     if not cdb.exists():
+        logger.warning("CDB not found: path=%s", cdb)
         return None
 
     dmp = Path(dmp_path)
     if not dmp.exists():
+        logger.warning("Minidump not found: path=%s", dmp)
         return None
 
     pdb_path = pdb_search_path or config.PDB_SEARCH_PATH
@@ -24,6 +30,7 @@ def symbolicate_minidump(dmp_path: str, pdb_search_path: str | None = None) -> s
     ]
 
     try:
+        logger.info("Running CDB: dmp=%s pdb_path=%s", dmp, pdb_path)
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -32,10 +39,19 @@ def symbolicate_minidump(dmp_path: str, pdb_search_path: str | None = None) -> s
             cwd=str(dmp.parent),
         )
         raw_output = result.stdout
+        if result.returncode != 0:
+            logger.warning(
+                "CDB exited with non-zero code: returncode=%s stderr=%s",
+                result.returncode,
+                result.stderr[-2000:] if result.stderr else "",
+            )
+        logger.info("CDB finished: returncode=%s stdout_chars=%s", result.returncode, len(raw_output))
         return _parse_cdb_output(raw_output)
     except subprocess.TimeoutExpired:
+        logger.exception("CDB timed out: dmp=%s pdb_path=%s", dmp, pdb_path)
         return "符号化超时（120秒）"
     except Exception as e:
+        logger.exception("CDB failed: dmp=%s pdb_path=%s", dmp, pdb_path)
         return f"符号化失败: {e}"
 
 

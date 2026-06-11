@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import subprocess
 from pathlib import Path
@@ -8,6 +9,7 @@ from .base import AgentProvider, AnalysisResult, CrashAnalysisInput
 
 RESULT_FILENAME = "analysis_result.json"
 LOG_FILENAME = "copilot_log.txt"
+logger = logging.getLogger(__name__)
 
 
 class CopilotAgent(AgentProvider):
@@ -15,7 +17,10 @@ class CopilotAgent(AgentProvider):
         return "copilot"
 
     def is_available(self) -> bool:
-        return shutil.which(config.COPILOT_PATH) is not None
+        available = shutil.which(config.COPILOT_PATH) is not None
+        if not available:
+            logger.warning("Copilot CLI not found: path=%s", config.COPILOT_PATH)
+        return available
 
     def analyze(self, crash_info: CrashAnalysisInput) -> AnalysisResult:
         if not crash_info.source_dir:
@@ -54,6 +59,13 @@ class CopilotAgent(AgentProvider):
         cwd = crash_info.source_dir or str(tmpdir)
 
         try:
+            logger.info(
+                "Starting Copilot analysis: crash_id=%s cwd=%s tmpdir=%s source_dir=%s",
+                crash_info.crash_id,
+                cwd,
+                tmpdir,
+                crash_info.source_dir,
+            )
             stdout_lines = []
             with subprocess.Popen(
                 cmd,
@@ -73,12 +85,20 @@ class CopilotAgent(AgentProvider):
                 proc.wait(timeout=config.COPILOT_TIMEOUT)
 
             raw_output = "".join(stdout_lines)
+            logger.info(
+                "Copilot analysis finished: crash_id=%s output_chars=%s result_file_exists=%s log_file=%s",
+                crash_info.crash_id,
+                len(raw_output),
+                result_file.exists(),
+                log_file,
+            )
 
             if result_file.exists():
                 return self._parse_result_file(result_file, raw_output)
             return self._parse_response(raw_output)
 
         except subprocess.TimeoutExpired:
+            logger.exception("Copilot analysis timed out: crash_id=%s timeout=%s", crash_info.crash_id, config.COPILOT_TIMEOUT)
             return AnalysisResult(
                 raw_response="分析超时",
                 root_cause="AI 分析超时，请重试或检查 Copilot 配置",
@@ -86,6 +106,7 @@ class CopilotAgent(AgentProvider):
                 confidence=0,
             )
         except Exception as e:
+            logger.exception("Copilot analysis failed: crash_id=%s", crash_info.crash_id)
             return AnalysisResult(
                 raw_response=str(e),
                 root_cause=f"调用 Copilot 失败: {e}",

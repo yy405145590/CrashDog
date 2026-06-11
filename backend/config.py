@@ -7,6 +7,9 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 CRASH_DIR = BASE_DIR / "crashes"
 TEMP_DIR = PROJECT_DIR / "tmp"
 SYMBOL_DIR = BASE_DIR / "symbols"
+LOG_DIR = PROJECT_DIR / "logs"
+LOG_FILE = LOG_DIR / "crashdog.log"
+LOG_LEVEL = "INFO"
 DATABASE_URL = f"sqlite:///{PROJECT_DIR / 'crashdog.db'}"
 
 PDB_SEARCH_PATH = str(PROJECT_DIR / "bin")
