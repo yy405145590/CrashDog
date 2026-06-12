@@ -32,6 +32,7 @@ class CrashDetail(CrashSummary):
     source_dir: Optional[str] = None
     symbol_package_id: Optional[str] = None
     module_guids: list[GuidEntry] = []
+    symbol_matches: list[SymbolMatchEntry] = []
     analyses: list[AnalysisResponse] = []
 
 
@@ -64,6 +65,17 @@ class GuidEntry(BaseModel):
     pdb_filename: Optional[str] = None
     source_file: Optional[str] = None
     module_name: Optional[str] = None
+
+
+class SymbolMatchEntry(BaseModel):
+    symbol_package_id: str
+    store_path: str
+    game_name: Optional[str] = None
+    build_version: Optional[str] = None
+    platform: Optional[str] = None
+    score: int = 0
+    matched_guid_count: int = 0
+    matched_modules: list[GuidEntry] = []
 
 
 class SymbolFileEntry(BaseModel):

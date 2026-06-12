@@ -47,12 +47,19 @@
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="当前符号包">
             <el-tag v-if="crash.symbol_package_id" size="small" type="success">{{ crash.symbol_package_id }}</el-tag>
+            <el-tag v-else-if="bestSymbolMatch" size="small" type="success">
+              可匹配：{{ bestSymbolMatch.symbol_package_id }}
+            </el-tag>
             <el-tag v-else size="small" type="warning">未匹配（使用默认路径）</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="匹配质量" v-if="bestSymbolMatch">
+            <el-tag size="small" type="info">{{ bestSymbolMatch.matched_guid_count }} 个 GUID</el-tag>
+            <span style="margin-left: 8px; color: #606266">分数 {{ bestSymbolMatch.score }}</span>
           </el-descriptions-item>
           <el-descriptions-item label="指定符号包">
             <el-select
               v-model="selectedSymbolId"
-              placeholder="自动匹配"
+              :placeholder="bestSymbolMatch ? `自动匹配：${bestSymbolMatch.symbol_package_id}` : '自动匹配'"
               clearable
               size="small"
               style="width: 260px"
@@ -76,6 +83,8 @@
                 </span>
                 <el-tag v-if="crash.symbol_package_id" size="small" type="success"
                         style="margin-left: 8px">已匹配</el-tag>
+                <el-tag v-else-if="bestSymbolMatch" size="small" type="success"
+                  style="margin-left: 8px">找到符号包</el-tag>
                 <el-tag v-else size="small" type="warning"
                         style="margin-left: 8px">未匹配</el-tag>
               </template>
@@ -233,12 +242,19 @@ const envInfo = computed(() => {
   } catch { return null }
 })
 
+const bestSymbolMatch = computed(() => {
+  return crash.value?.symbol_matches?.[0] || null
+})
+
 async function fetchData() {
   loading.value = true
   try {
     const { data } = await getCrash(crashId)
     crash.value = data
     analyses.value = data.analyses || []
+    if (!selectedSymbolId.value && data.symbol_matches?.length) {
+      selectedSymbolId.value = data.symbol_matches[0].symbol_package_id
+    }
     if (!data.symbolicated_callstack) stackTab.value = 'raw'
     if (data.status === 'analyzing') {
       startPolling()
@@ -262,6 +278,7 @@ async function handleResymbolicate() {
     const { data } = await resymbolicate(crashId, selectedSymbolId.value || undefined)
     crash.value.symbolicated_callstack = data.symbolicated_callstack
     crash.value.symbol_package_id = data.symbol_package_id
+    crash.value.symbol_matches = data.symbol_package_id ? [] : crash.value.symbol_matches
     stackTab.value = 'symbolicated'
     ElMessage.success('重新符号化完成')
   } catch (e) {

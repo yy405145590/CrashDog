@@ -9,10 +9,10 @@ from sqlalchemy.orm import Session
 from .. import config
 from ..database import get_db
 from ..models import CrashReport
-from ..schemas import CrashDetail, CrashSummary, GuidEntry, StatusResponse
+from ..schemas import CrashDetail, CrashSummary, GuidEntry, StatusResponse, SymbolMatchEntry
 from ..services.crash_parser import extract_zip, parse_crash_directory
 from ..services.guid_extractor import extract_guids_from_dmp
-from ..services.symbolizer import resolve_pdb_path, symbolicate_minidump
+from ..services.symbolizer import find_symbol_package_matches, resolve_pdb_path, symbolicate_minidump
 
 router = APIRouter(prefix="/api/crashes", tags=["crashes"])
 logger = logging.getLogger(__name__)
@@ -127,16 +127,21 @@ def get_crash(crash_id: str, db: Session = Depends(get_db)):
     if not crash:
         raise HTTPException(404, "崩溃记录不存在")
 
+    raw_module_guids = []
     module_guids = []
     if crash.module_guids_json:
         try:
-            raw = json.loads(crash.module_guids_json)
-            module_guids = [GuidEntry(**g) for g in raw]
+            raw_module_guids = json.loads(crash.module_guids_json)
+            module_guids = [GuidEntry(**g) for g in raw_module_guids]
         except (json.JSONDecodeError, TypeError):
             pass
 
     detail = CrashDetail.model_validate(crash)
     detail.module_guids = module_guids
+    detail.symbol_matches = [
+        SymbolMatchEntry(**match)
+        for match in find_symbol_package_matches(raw_module_guids, db)
+    ]
     return detail
 
 
