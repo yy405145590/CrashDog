@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -94,6 +95,14 @@ async def upload_symbol(
         if any(c in val for c in ("/", "\\", "..")):
             raise HTTPException(400, "名称中不能包含路径分隔符")
 
+    existing = db.query(SymbolPackage).filter_by(
+        game_name=game_name,
+        build_version=build_version,
+        platform=platform,
+    ).first()
+    if existing:
+        raise HTTPException(409, "该游戏、版本、平台的符号包已存在，请删除旧包后重新上传")
+
     sym_id = "sym_" + uuid.uuid4().hex[:12]
     if game_name and build_version:
         store_dir = config.SYMBOL_DIR / game_name / build_version
@@ -111,7 +120,17 @@ async def upload_symbol(
         status="uploading",
     )
     db.add(sym)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        logger.warning(
+            "Duplicate symbol upload rejected: game=%s build=%s platform=%s",
+            game_name,
+            build_version,
+            platform,
+        )
+        raise HTTPException(409, "该游戏、版本、平台的符号包已存在，请删除旧包后重新上传") from e
 
     config.SYMBOL_DIR.mkdir(parents=True, exist_ok=True)
     temp_zip = config.SYMBOL_DIR / f"_tmp_{sym_id}.zip"
