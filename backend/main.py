@@ -1,4 +1,10 @@
+import atexit
+import faulthandler
 import logging
+import os
+import signal
+import sys
+import threading
 from logging.handlers import RotatingFileHandler
 
 from fastapi import FastAPI, Request
@@ -8,6 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config
 from .database import init_db
 from .routers import analysis, crash, symbol
+
+
+_fault_log_handle = None
 
 
 def configure_logging():
@@ -39,7 +48,72 @@ def configure_logging():
         logging.getLogger(logger_name).propagate = True
 
 
+def configure_process_diagnostics():
+    global _fault_log_handle
+
+    if _fault_log_handle is None:
+        _fault_log_handle = open(config.FAULT_LOG_FILE, "a", encoding="utf-8")
+        faulthandler.enable(file=_fault_log_handle, all_threads=True)
+
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "Process diagnostics enabled: pid=%s ppid=%s executable=%s argv=%s cwd=%s fault_log=%s",
+        os.getpid(),
+        os.getppid(),
+        sys.executable,
+        sys.argv,
+        os.getcwd(),
+        config.FAULT_LOG_FILE,
+    )
+
+    def log_excepthook(exc_type, exc, traceback):
+        logger.critical("Unhandled top-level exception", exc_info=(exc_type, exc, traceback))
+        sys.__excepthook__(exc_type, exc, traceback)
+
+    def log_threading_excepthook(args):
+        logger.critical(
+            "Unhandled thread exception: thread=%s",
+            args.thread.name if args.thread else None,
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+        if hasattr(threading, "__excepthook__"):
+            threading.__excepthook__(args)
+
+    sys.excepthook = log_excepthook
+    if hasattr(threading, "excepthook"):
+        threading.excepthook = log_threading_excepthook
+
+    def log_exit():
+        logger.info("Python process exiting: pid=%s", os.getpid())
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        if _fault_log_handle is not None:
+            _fault_log_handle.flush()
+
+    atexit.register(log_exit)
+
+    for signal_name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, signal_name, None)
+        if sig is None:
+            continue
+        previous_handler = signal.getsignal(sig)
+
+        def make_handler(name, signum, old_handler):
+            def handler(received_signum, frame):
+                logger.warning("Received signal: name=%s signum=%s pid=%s", name, received_signum, os.getpid())
+                for log_handler in logging.getLogger().handlers:
+                    log_handler.flush()
+                if callable(old_handler):
+                    old_handler(received_signum, frame)
+                elif old_handler == signal.SIG_DFL:
+                    raise KeyboardInterrupt if signum == signal.SIGINT else SystemExit(128 + received_signum)
+            return handler
+
+        signal.signal(sig, make_handler(signal_name, sig, previous_handler))
+
+
 configure_logging()
+configure_process_diagnostics()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CrashDog", description="UE5 崩溃收集与分析平台")
