@@ -1,6 +1,7 @@
 import json
 import logging
 import shutil
+import time
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,28 @@ logger = logging.getLogger(__name__)
 
 SYMBOL_KEEP_COUNT = 5
 SYMBOL_KEEP_DAYS = 2
+
+
+def _format_bytes(size: int | None) -> str:
+    if size is None:
+        return "unknown"
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.1f} {unit}"
+        value /= 1024
+
+
+def _disk_usage_text(path: Path) -> str:
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    usage = shutil.disk_usage(probe)
+    return (
+        f"total={_format_bytes(usage.total)} "
+        f"used={_format_bytes(usage.used)} "
+        f"free={_format_bytes(usage.free)}"
+    )
 
 
 def _as_utc(value: datetime | None) -> datetime:
@@ -134,15 +157,54 @@ async def upload_symbol(
 
     config.SYMBOL_DIR.mkdir(parents=True, exist_ok=True)
     temp_zip = config.SYMBOL_DIR / f"_tmp_{sym_id}.zip"
+    guid_infos = []
+    started_at = time.monotonic()
+
+    logger.info(
+        "symbol upload started: id=%s filename=%s game=%s build=%s platform=%s temp_zip=%s store_dir=%s disk=%s",
+        sym_id,
+        file.filename,
+        game_name,
+        build_version,
+        platform,
+        temp_zip,
+        store_dir,
+        _disk_usage_text(config.SYMBOL_DIR),
+    )
 
     try:
+        phase_started = time.monotonic()
+        uploaded_size = 0
+        chunk_count = 0
+        logger.info("symbol upload receiving body: id=%s", sym_id)
         with open(temp_zip, "wb") as f:
             while chunk := await file.read(8 * 1024 * 1024):
                 f.write(chunk)
+                uploaded_size += len(chunk)
+                chunk_count += 1
+                if chunk_count % 32 == 0:
+                    logger.info(
+                        "symbol upload receive progress: id=%s uploaded=%s chunks=%s elapsed=%.1fs disk=%s",
+                        sym_id,
+                        _format_bytes(uploaded_size),
+                        chunk_count,
+                        time.monotonic() - phase_started,
+                        _disk_usage_text(config.SYMBOL_DIR),
+                    )
+        logger.info(
+            "symbol upload body saved: id=%s zip_size=%s chunks=%s elapsed=%.1fs disk=%s",
+            sym_id,
+            _format_bytes(uploaded_size),
+            chunk_count,
+            time.monotonic() - phase_started,
+            _disk_usage_text(config.SYMBOL_DIR),
+        )
 
         store_dir.mkdir(parents=True, exist_ok=True)
         file_entries = []
         total_size = 0
+        phase_started = time.monotonic()
+        logger.info("symbol upload extracting zip: id=%s zip=%s", sym_id, temp_zip)
         with zipfile.ZipFile(temp_zip, "r") as zf:
             for info in zf.infolist():
                 if info.is_dir():
@@ -154,10 +216,37 @@ async def upload_symbol(
                 zf.extract(info, store_dir)
                 file_entries.append({"name": info.filename, "size": info.file_size})
                 total_size += info.file_size
+                if len(file_entries) % 100 == 0:
+                    logger.info(
+                        "symbol upload extract progress: id=%s files=%s extracted_size=%s elapsed=%.1fs disk=%s",
+                        sym_id,
+                        len(file_entries),
+                        _format_bytes(total_size),
+                        time.monotonic() - phase_started,
+                        _disk_usage_text(store_dir),
+                    )
+        logger.info(
+            "symbol upload extracted zip: id=%s files=%s uncompressed_size=%s elapsed=%.1fs disk=%s",
+            sym_id,
+            len(file_entries),
+            _format_bytes(total_size),
+            time.monotonic() - phase_started,
+            _disk_usage_text(store_dir),
+        )
 
+        phase_started = time.monotonic()
+        logger.info("symbol upload scanning GUIDs: id=%s store_dir=%s", sym_id, store_dir)
         guid_infos = scan_directory_for_guids(store_dir)
+        logger.info(
+            "symbol upload scanned GUIDs: id=%s guid_count=%s elapsed=%.1fs",
+            sym_id,
+            len(guid_infos),
+            time.monotonic() - phase_started,
+        )
 
         if guid_infos:
+            phase_started = time.monotonic()
+            logger.info("symbol upload checking duplicate GUIDs: id=%s guid_count=%s", sym_id, len(guid_infos))
             existing_guid_values = [gi.guid for gi in guid_infos]
             existing = db.query(SymbolGuid).filter(
                 SymbolGuid.guid.in_(existing_guid_values),
@@ -166,12 +255,25 @@ async def upload_symbol(
             if existing:
                 old_pkg = db.query(SymbolPackage).filter_by(id=existing.symbol_package_id).first()
                 if old_pkg:
+                    logger.info(
+                        "symbol upload removing old package with duplicate GUID: id=%s old_id=%s old_path=%s",
+                        sym_id,
+                        old_pkg.id,
+                        old_pkg.store_path,
+                    )
                     old_path = Path(old_pkg.store_path)
                     if old_path.exists():
                         shutil.rmtree(old_path)
                     db.delete(old_pkg)
                     db.flush()
+            logger.info(
+                "symbol upload duplicate GUID check complete: id=%s elapsed=%.1fs",
+                sym_id,
+                time.monotonic() - phase_started,
+            )
 
+        phase_started = time.monotonic()
+        logger.info("symbol upload saving metadata: id=%s files=%s guid_count=%s", sym_id, len(file_entries), len(guid_infos))
         for gi in guid_infos:
             db.add(SymbolGuid(
                 symbol_package_id=sym_id,
@@ -185,20 +287,54 @@ async def upload_symbol(
         sym.file_list = json.dumps(file_entries, ensure_ascii=False)
         sym.status = "ready"
         db.commit()
+        logger.info(
+            "symbol upload metadata saved: id=%s elapsed=%.1fs",
+            sym_id,
+            time.monotonic() - phase_started,
+        )
         try:
+            phase_started = time.monotonic()
+            logger.info("symbol upload cleanup old packages started: id=%s game_name=%s", sym_id, sym.game_name)
             _cleanup_old_symbols_for_game(db, sym.game_name)
             db.commit()
+            logger.info(
+                "symbol upload cleanup old packages complete: id=%s elapsed=%.1fs disk=%s",
+                sym_id,
+                time.monotonic() - phase_started,
+                _disk_usage_text(config.SYMBOL_DIR),
+            )
         except Exception:
             db.rollback()
             logger.exception("symbol cleanup failed for game_name=%s", sym.game_name)
         db.refresh(sym)
+        logger.info(
+            "symbol upload complete: id=%s zip_size=%s uncompressed_size=%s files=%s guid_count=%s total_elapsed=%.1fs",
+            sym_id,
+            _format_bytes(uploaded_size),
+            _format_bytes(total_size),
+            len(file_entries),
+            len(guid_infos),
+            time.monotonic() - started_at,
+        )
     except Exception as e:
+        logger.exception(
+            "symbol upload failed: id=%s filename=%s temp_zip=%s store_dir=%s elapsed=%.1fs disk=%s",
+            sym_id,
+            file.filename,
+            temp_zip,
+            store_dir,
+            time.monotonic() - started_at,
+            _disk_usage_text(config.SYMBOL_DIR),
+        )
         sym.status = "failed"
         db.commit()
         if store_dir.exists():
+            logger.info("symbol upload removing failed store dir: id=%s store_dir=%s", sym_id, store_dir)
             shutil.rmtree(store_dir)
         raise HTTPException(500, f"处理符号包失败: {e}")
     finally:
+        if temp_zip.exists():
+            logger.info("symbol upload removing temp zip: id=%s temp_zip=%s", sym_id, temp_zip)
         temp_zip.unlink(missing_ok=True)
 
     return SymbolPackageSummary(
