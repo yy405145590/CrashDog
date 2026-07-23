@@ -51,6 +51,7 @@ Build/
 
 # App Specific (CrashDog)
 /tmp/
+/offline-packages/
 /uploads/
 backend/uploads/**
 !backend/uploads/

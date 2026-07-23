@@ -3,7 +3,8 @@ setlocal
 chcp 65001 >nul
 
 set "ROOT=%~dp0"
-set "PYEXE=%ROOT%.venv\Scripts\python.exe"
+set "PYEXE=%ROOT%runtime\python\python.exe"
+if not exist "%PYEXE%" set "PYEXE=%ROOT%.venv\Scripts\python.exe"
 if not exist "%PYEXE%" set "PYEXE=python"
 set "LOG_DIR=%ROOT%logs"
 set "CONSOLE_LOG=%LOG_DIR%\backend-console.log"
@@ -18,7 +19,7 @@ echo Mode: stable
 echo Console log: %CONSOLE_LOG%
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $log = '%CONSOLE_LOG%'; Write-Output ('===== Backend stable start {0} =====' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) | Tee-Object -FilePath $log -Append; & '%PYEXE%' -m uvicorn backend.main:app --host 0.0.0.0 --port 18000 2>&1 | Tee-Object -FilePath $log -Append; $code = $LASTEXITCODE; Write-Output ('===== Backend stable stopped {0}; exit code {1} =====' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $code) | Tee-Object -FilePath $log -Append; exit $code }"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%start-backend.ps1" -PythonExe "%PYEXE%" -ConsoleLog "%CONSOLE_LOG%"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
