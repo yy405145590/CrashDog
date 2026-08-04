@@ -212,6 +212,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getCrash, triggerAnalysis, getCrashStatus, getAnalysisLog, getAnalyses } from '../api/crash'
 import { resymbolicate, listSymbols } from '../api/symbol'
+import { formatTime } from '../utils/datetime'
 
 const route = useRoute()
 const crashId = route.params.id
@@ -378,11 +379,6 @@ function confidenceColor(v) {
   if (v >= 80) return '#67c23a'
   if (v >= 50) return '#e6a23c'
   return '#f56c6c'
-}
-
-function formatTime(t) {
-  if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN')
 }
 
 onMounted(fetchData)

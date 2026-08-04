@@ -1,9 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
+
+
+def _serialize_utc_datetime(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
 
 
 class CrashSummary(BaseModel):
@@ -17,6 +25,10 @@ class CrashSummary(BaseModel):
     crashed_thread: Optional[str] = None
     platform: Optional[str] = None
     symbol_package_id: Optional[str] = None
+
+    @field_serializer("upload_time")
+    def serialize_upload_time(self, value: datetime) -> str:
+        return _serialize_utc_datetime(value)
 
     model_config = {"from_attributes": True}
 
@@ -47,6 +59,10 @@ class AnalysisResponse(BaseModel):
     fix_suggestion: Optional[str] = None
     source_references: Optional[str] = None
     created_at: datetime
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, value: datetime) -> str:
+        return _serialize_utc_datetime(value)
 
     model_config = {"from_attributes": True}
 
@@ -95,6 +111,10 @@ class SymbolPackageSummary(BaseModel):
     description: Optional[str] = None
     linked_crash_count: int = 0
     guid_count: int = 0
+
+    @field_serializer("upload_time")
+    def serialize_upload_time(self, value: datetime) -> str:
+        return _serialize_utc_datetime(value)
 
     model_config = {"from_attributes": True}
 

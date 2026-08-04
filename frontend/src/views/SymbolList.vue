@@ -124,6 +124,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listSymbols, uploadSymbol, deleteSymbol } from '../api/symbol'
+import { formatTime } from '../utils/datetime'
 
 const symbols = ref([])
 const loading = ref(false)
@@ -224,11 +225,6 @@ function formatSize(bytes) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
-}
-
-function formatTime(t) {
-  if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN')
 }
 
 onMounted(fetchSymbols)

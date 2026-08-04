@@ -57,6 +57,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listCrashes, uploadCrash, deleteCrash } from '../api/crash'
+import { formatTime } from '../utils/datetime'
 
 const router = useRouter()
 const crashes = ref([])
@@ -110,11 +111,6 @@ const STATUS_MAP = {
 
 function statusType(s) { return STATUS_MAP[s]?.type ?? 'info' }
 function statusLabel(s) { return STATUS_MAP[s]?.label ?? s }
-
-function formatTime(t) {
-  if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN')
-}
 
 onMounted(fetchCrashes)
 </script>

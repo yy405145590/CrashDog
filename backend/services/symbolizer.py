@@ -1,5 +1,7 @@
 import logging
+import platform
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -7,6 +9,98 @@ from .. import config
 
 
 logger = logging.getLogger(__name__)
+
+_cached_cdb_path: Path | None = None
+
+
+def _preferred_cdb_architectures(configured_path: Path) -> list[str]:
+    configured_arch = configured_path.parent.name.lower()
+    if configured_arch == "x64":
+        configured_arch = "amd64"
+
+    machine_arch = platform.machine().lower()
+    if machine_arch in {"x86_64", "x64"}:
+        machine_arch = "amd64"
+    elif machine_arch in {"i386", "i686"}:
+        machine_arch = "x86"
+
+    supported = ["amd64", "x86", "arm64"]
+    preferred = configured_arch if configured_arch in supported else machine_arch
+    return ([preferred] if preferred in supported else []) + [
+        arch for arch in supported if arch != preferred
+    ]
+
+
+def _windows_sdk_cdb_candidates(architectures: list[str]) -> list[Path]:
+    debugger_dir = Path(r"C:\Program Files (x86)\Windows Kits\10\Debuggers")
+    sdk_arch_names = {"amd64": "x64", "x86": "x86", "arm64": "arm64"}
+    return [debugger_dir / sdk_arch_names[arch] / "cdb.exe" for arch in architectures]
+
+
+def _windbg_package_install_locations() -> list[Path]:
+    if platform.system() != "Windows":
+        return []
+
+    script = (
+        "$ErrorActionPreference='SilentlyContinue'; "
+        "Get-AppxPackage -Name Microsoft.WinDbg | "
+        "Sort-Object Version -Descending | "
+        "ForEach-Object { $_.InstallLocation }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.exception("Failed to query the Microsoft.WinDbg package")
+        return []
+
+    if result.returncode != 0:
+        logger.warning(
+            "Microsoft.WinDbg package query failed: returncode=%s stderr=%s",
+            result.returncode,
+            result.stderr[-1000:] if result.stderr else "",
+        )
+        return []
+
+    return [Path(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+
+
+def resolve_cdb_path() -> Path | None:
+    """Find CDB without relying on a versioned Microsoft Store package path."""
+    global _cached_cdb_path
+
+    if _cached_cdb_path and _cached_cdb_path.is_file():
+        return _cached_cdb_path
+
+    configured = Path(config.CDB_PATH)
+    if configured.is_file():
+        _cached_cdb_path = configured
+        return configured
+
+    architectures = _preferred_cdb_architectures(configured)
+    candidates = _windows_sdk_cdb_candidates(architectures)
+
+    path_cdb = shutil.which("cdb.exe")
+    if path_cdb:
+        candidates.append(Path(path_cdb))
+
+    for install_location in _windbg_package_install_locations():
+        candidates.extend(install_location / arch / "cdb.exe" for arch in architectures)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            _cached_cdb_path = candidate
+            logger.info("CDB auto-resolved: configured=%s resolved=%s", configured, candidate)
+            return candidate
+
+    _cached_cdb_path = None
+    logger.warning("CDB not found: configured_path=%s", configured)
+    return None
 
 
 def _build_cdb_command() -> str:
@@ -20,9 +114,8 @@ def _build_cdb_command() -> str:
 
 
 def symbolicate_minidump(dmp_path: str, pdb_search_path: str | None = None) -> str | None:
-    cdb = Path(config.CDB_PATH)
-    if not cdb.exists():
-        logger.warning("CDB not found: path=%s", cdb)
+    cdb = resolve_cdb_path()
+    if cdb is None:
         return None
 
     dmp = Path(dmp_path)
