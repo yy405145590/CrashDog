@@ -42,4 +42,21 @@ def init_db():
             conn.execute(text(
                 "ALTER TABLE crash_reports ADD COLUMN module_guids_json TEXT"
             ))
+    # create_all 不会给已存在的表补索引，这里显式创建（幂等）。
+    _new_indexes = [
+        ("ix_crash_upload_time", "crash_reports", "upload_time"),
+        ("ix_crash_game_name", "crash_reports", "game_name"),
+        ("ix_crash_platform", "crash_reports", "platform"),
+        ("ix_crash_status", "crash_reports", "status"),
+        ("ix_crash_symbol_package_id", "crash_reports", "symbol_package_id"),
+        ("ix_symbol_game_name", "symbol_packages", "game_name"),
+        ("ix_symbol_platform", "symbol_packages", "platform"),
+        ("ix_symbol_upload_time", "symbol_packages", "upload_time"),
+        ("ix_symbol_guid_package_id", "symbol_guids", "symbol_package_id"),
+    ]
+    with engine.begin() as conn:
+        for name, table, column in _new_indexes:
+            conn.execute(text(
+                f'CREATE INDEX IF NOT EXISTS "{name}" ON "{table}" ("{column}")'
+            ))
     logger.info("Database initialized")

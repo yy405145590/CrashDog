@@ -8,6 +8,13 @@ from .database import Base
 
 class CrashReport(Base):
     __tablename__ = "crash_reports"
+    __table_args__ = (
+        Index("ix_crash_upload_time", "upload_time"),
+        Index("ix_crash_game_name", "game_name"),
+        Index("ix_crash_platform", "platform"),
+        Index("ix_crash_status", "status"),
+        Index("ix_crash_symbol_package_id", "symbol_package_id"),
+    )
 
     id = Column(String, primary_key=True)
     upload_time = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -39,6 +46,9 @@ class SymbolPackage(Base):
     __tablename__ = "symbol_packages"
     __table_args__ = (
         UniqueConstraint("game_name", "build_version", "platform", name="uq_symbol_version"),
+        Index("ix_symbol_game_name", "game_name"),
+        Index("ix_symbol_platform", "platform"),
+        Index("ix_symbol_upload_time", "upload_time"),
     )
 
     id = Column(String, primary_key=True)
@@ -59,6 +69,9 @@ class SymbolPackage(Base):
 
 class SymbolGuid(Base):
     __tablename__ = "symbol_guids"
+    __table_args__ = (
+        Index("ix_symbol_guid_package_id", "symbol_package_id"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     symbol_package_id = Column(String, ForeignKey("symbol_packages.id"), nullable=False)

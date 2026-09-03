@@ -8,8 +8,8 @@ export function uploadCrash(file) {
   return api.post('/crashes/upload', form)
 }
 
-export function listCrashes() {
-  return api.get('/crashes')
+export function listCrashes(params = {}) {
+  return api.get('/crashes', { params })
 }
 
 export function getCrash(id) {

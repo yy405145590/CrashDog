@@ -3,13 +3,14 @@ import logging
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, defer
 
 from .. import config
 from ..database import get_db
 from ..models import CrashReport
-from ..schemas import CrashDetail, CrashSummary, GuidEntry, StatusResponse, SymbolMatchEntry
+from ..schemas import CrashDetail, CrashListResponse, CrashSummary, GuidEntry, StatusResponse, SymbolMatchEntry
 from ..services.crash_parser import extract_zip, parse_crash_directory
 from ..services.guid_extractor import extract_guids_from_dmp
 from ..services.symbolizer import find_symbol_package_matches, resolve_pdb_path, symbolicate_minidump
@@ -116,9 +117,50 @@ async def upload_crash(file: UploadFile, db: Session = Depends(get_db)):
     return crash
 
 
-@router.get("", response_model=list[CrashSummary])
-def list_crashes(db: Session = Depends(get_db)):
-    return db.query(CrashReport).order_by(CrashReport.upload_time.desc()).all()
+@router.get("", response_model=CrashListResponse)
+def list_crashes(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    game_name: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    db: Session = Depends(get_db),
+):
+    # 只查列表需要的轻量列：延迟加载 log/调用栈等大 TEXT 字段，
+    # 否则每条记录几十 MB 的 log_content 都会被 SQLite 读进内存。
+    base = db.query(CrashReport).options(
+        defer(CrashReport.raw_callstack),
+        defer(CrashReport.symbolicated_callstack),
+        defer(CrashReport.crash_context_json),
+        defer(CrashReport.log_content),
+        defer(CrashReport.log_tail),
+        defer(CrashReport.module_guids_json),
+    )
+    if game_name:
+        base = base.filter(CrashReport.game_name == game_name)
+    if platform:
+        base = base.filter(CrashReport.platform == platform)
+    if status:
+        base = base.filter(CrashReport.status == status)
+    if search:
+        like = f"%{search}%"
+        base = base.filter(
+            or_(
+                CrashReport.id.like(like),
+                CrashReport.error_message.like(like),
+                CrashReport.build_version.like(like),
+                CrashReport.crashed_thread.like(like),
+            )
+        )
+    total = base.order_by(None).count()
+    items = (
+        base.order_by(CrashReport.upload_time.desc(), CrashReport.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return CrashListResponse(total=total, items=items)
 
 
 @router.get("/{crash_id}", response_model=CrashDetail)

@@ -33,6 +33,11 @@ class CrashSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CrashListResponse(BaseModel):
+    total: int
+    items: list[CrashSummary]
+
+
 class CrashDetail(CrashSummary):
     engine_version: Optional[str] = None
     svn_revision: Optional[str] = None

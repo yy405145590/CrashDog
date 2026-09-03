@@ -6,10 +6,10 @@
         <el-button type="primary" @click="uploadVisible = true">上传符号包</el-button>
       </div>
       <div style="display: flex; gap: 12px">
-        <el-select v-model="filterGame" placeholder="游戏名称" clearable style="width: 160px" @change="fetchSymbols">
+        <el-select v-model="filterGame" placeholder="游戏名称" clearable style="width: 160px" @change="() => fetchSymbols(true)">
           <el-option v-for="g in gameOptions" :key="g" :label="g" :value="g" />
         </el-select>
-        <el-select v-model="filterPlatform" placeholder="平台" clearable style="width: 120px" @change="fetchSymbols">
+        <el-select v-model="filterPlatform" placeholder="平台" clearable style="width: 120px" @change="() => fetchSymbols(true)">
           <el-option label="Windows" value="Windows" />
           <el-option label="Linux" value="Linux" />
           <el-option label="Mac" value="Mac" />
@@ -19,10 +19,10 @@
           placeholder="搜索版本号或SVN修订号"
           clearable
           style="width: 240px"
-          @keyup.enter="fetchSymbols"
-          @clear="fetchSymbols"
+          @keyup.enter="() => fetchSymbols(true)"
+          @clear="() => fetchSymbols(true)"
         />
-        <el-button @click="fetchSymbols">搜索</el-button>
+        <el-button @click="() => fetchSymbols(true)">搜索</el-button>
       </div>
     </el-card>
 
@@ -59,6 +59,17 @@
           </template>
         </el-table-column>
       </el-table>
+      <div style="display: flex; justify-content: flex-end; margin-top: 16px">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :total="total"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next, jumper"
+          @size-change="fetchSymbols"
+          @current-change="fetchSymbols"
+        />
+      </div>
     </el-card>
 
     <!-- 上传对话框 -->
@@ -128,6 +139,9 @@ import { formatTime } from '../utils/datetime'
 
 const symbols = ref([])
 const loading = ref(false)
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const filterGame = ref('')
 const filterPlatform = ref('')
 const searchText = ref('')
@@ -150,15 +164,17 @@ const canUpload = computed(() => {
   return !!uploadFile.value
 })
 
-async function fetchSymbols() {
+async function fetchSymbols(resetPage = false) {
+  if (resetPage) page.value = 1
   loading.value = true
   try {
-    const params = {}
+    const params = { page: page.value, page_size: pageSize.value }
     if (filterGame.value) params.game_name = filterGame.value
     if (filterPlatform.value) params.platform = filterPlatform.value
     if (searchText.value) params.search = searchText.value
     const { data } = await listSymbols(params)
     symbols.value = data.items || []
+    total.value = data.total || 0
     const games = new Set(symbols.value.map(s => s.game_name))
     if (filterGame.value) games.add(filterGame.value)
     gameOptions.value = [...games]
@@ -227,5 +243,5 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
 }
 
-onMounted(fetchSymbols)
+onMounted(() => fetchSymbols())
 </script>

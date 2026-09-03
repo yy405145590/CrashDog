@@ -268,7 +268,7 @@ async function fetchData() {
 
 async function loadSymbolOptions() {
   try {
-    const { data } = await listSymbols({})
+    const { data } = await listSymbols({ page: 1, page_size: 200 })
     symbolOptions.value = (data.items || []).filter(s => s.status === 'ready')
   } catch {}
 }

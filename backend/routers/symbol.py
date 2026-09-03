@@ -7,10 +7,10 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from .. import config
 from ..database import get_db
@@ -357,26 +357,54 @@ def list_symbols(
     game_name: str | None = None,
     platform: str | None = None,
     search: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    query = db.query(SymbolPackage)
+    query = db.query(SymbolPackage).options(defer(SymbolPackage.file_list))
     if game_name:
-        query = query.filter_by(game_name=game_name)
+        query = query.filter(SymbolPackage.game_name == game_name)
     if platform:
-        query = query.filter_by(platform=platform)
+        query = query.filter(SymbolPackage.platform == platform)
     if search:
+        like = f"%{search}%"
         query = query.filter(
             or_(
-                SymbolPackage.build_version.contains(search),
-                SymbolPackage.svn_revision.contains(search),
+                SymbolPackage.build_version.like(like),
+                SymbolPackage.svn_revision.like(like),
+                SymbolPackage.id.like(like),
+                SymbolPackage.description.like(like),
             )
         )
-    symbols = query.order_by(SymbolPackage.upload_time.desc()).all()
+    total = query.order_by(None).count()
+    symbols = (
+        query.order_by(SymbolPackage.upload_time.desc(), SymbolPackage.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
 
-    items = []
-    for sym in symbols:
-        count = db.query(CrashReport).filter_by(symbol_package_id=sym.id).count()
-        items.append(SymbolPackageSummary(
+    # 批量聚合关联数：原来每个符号包各做一次 COUNT + 一次懒加载 guids，
+    # 符号包/崩溃多了以后就是 N+1 灾难。这里固定 3 条查询。
+    ids = [sym.id for sym in symbols]
+    crash_counts: dict[str, int] = {}
+    guid_counts: dict[str, int] = {}
+    if ids:
+        crash_counts = dict(
+            db.query(CrashReport.symbol_package_id, func.count(CrashReport.id))
+            .filter(CrashReport.symbol_package_id.in_(ids))
+            .group_by(CrashReport.symbol_package_id)
+            .all()
+        )
+        guid_counts = dict(
+            db.query(SymbolGuid.symbol_package_id, func.count(SymbolGuid.id))
+            .filter(SymbolGuid.symbol_package_id.in_(ids))
+            .group_by(SymbolGuid.symbol_package_id)
+            .all()
+        )
+
+    items = [
+        SymbolPackageSummary(
             id=sym.id,
             game_name=sym.game_name,
             build_version=sym.build_version,
@@ -386,11 +414,13 @@ def list_symbols(
             status=sym.status,
             upload_time=sym.upload_time,
             description=sym.description,
-            linked_crash_count=count,
-            guid_count=len(sym.guids),
-        ))
+            linked_crash_count=crash_counts.get(sym.id, 0),
+            guid_count=guid_counts.get(sym.id, 0),
+        )
+        for sym in symbols
+    ]
 
-    return SymbolListResponse(total=len(items), items=items)
+    return SymbolListResponse(total=total, items=items)
 
 
 @router.get("/{symbol_id}", response_model=SymbolPackageDetail)

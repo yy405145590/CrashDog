@@ -1,7 +1,7 @@
 <template>
   <div>
     <el-card shadow="never" style="margin-bottom: 20px">
-      <div style="display: flex; justify-content: space-between; align-items: center">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px">
         <h2 style="margin: 0">崩溃列表</h2>
         <el-upload
           :show-file-list="false"
@@ -10,6 +10,33 @@
         >
           <el-button type="primary">上传崩溃 ZIP</el-button>
         </el-upload>
+      </div>
+      <div style="display: flex; gap: 12px; flex-wrap: wrap">
+        <el-input
+          v-model="searchText"
+          placeholder="搜索 Crash ID / 错误信息 / 版本 / 线程"
+          clearable
+          style="width: 300px"
+          @keyup.enter="handleSearch"
+          @clear="handleSearch"
+        />
+        <el-input
+          v-model="filterGame"
+          placeholder="游戏名称"
+          clearable
+          style="width: 160px"
+          @keyup.enter="handleSearch"
+          @clear="handleSearch"
+        />
+        <el-select v-model="filterPlatform" placeholder="平台" clearable style="width: 120px" @change="handleSearch">
+          <el-option label="Windows" value="Windows" />
+          <el-option label="Linux" value="Linux" />
+          <el-option label="Mac" value="Mac" />
+        </el-select>
+        <el-select v-model="filterStatus" placeholder="状态" clearable style="width: 130px" @change="handleSearch">
+          <el-option v-for="(v, k) in STATUS_MAP" :key="k" :label="v.label" :value="k" />
+        </el-select>
+        <el-button @click="handleSearch">搜索</el-button>
       </div>
     </el-card>
 
@@ -48,6 +75,17 @@
           </template>
         </el-table-column>
       </el-table>
+      <div style="display: flex; justify-content: flex-end; margin-top: 16px">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :total="total"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next, jumper"
+          @size-change="fetchCrashes"
+          @current-change="fetchCrashes"
+        />
+      </div>
     </el-card>
   </div>
 </template>
@@ -62,12 +100,36 @@ import { formatTime } from '../utils/datetime'
 const router = useRouter()
 const crashes = ref([])
 const loading = ref(false)
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
+const searchText = ref('')
+const filterGame = ref('')
+const filterPlatform = ref('')
+const filterStatus = ref('')
+
+function handleSearch() {
+  page.value = 1
+  fetchCrashes()
+}
 
 async function fetchCrashes() {
   loading.value = true
   try {
-    const { data } = await listCrashes()
-    crashes.value = data
+    const params = { page: page.value, page_size: pageSize.value }
+    if (searchText.value) params.search = searchText.value
+    if (filterGame.value) params.game_name = filterGame.value
+    if (filterPlatform.value) params.platform = filterPlatform.value
+    if (filterStatus.value) params.status = filterStatus.value
+    const { data } = await listCrashes(params)
+    // 兼容旧接口（直接返回数组）与新分页接口（{ total, items }）
+    if (Array.isArray(data)) {
+      crashes.value = data
+      total.value = data.length
+    } else {
+      crashes.value = data.items || []
+      total.value = data.total || 0
+    }
   } finally {
     loading.value = false
   }
@@ -78,6 +140,7 @@ async function handleUpload(file) {
     loading.value = true
     await uploadCrash(file)
     ElMessage.success('上传并解析成功')
+    page.value = 1
     await fetchCrashes()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '上传失败')
