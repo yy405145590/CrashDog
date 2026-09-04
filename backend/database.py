@@ -42,12 +42,29 @@ def init_db():
             conn.execute(text(
                 "ALTER TABLE crash_reports ADD COLUMN module_guids_json TEXT"
             ))
+    if "resolution_status" not in columns:
+        logger.info("Migrating database: add crash_reports.resolution_status")
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE crash_reports ADD COLUMN resolution_status VARCHAR DEFAULT 'unresolved'"
+            ))
+            # 历史数据统一置为未解决
+            conn.execute(text(
+                "UPDATE crash_reports SET resolution_status='unresolved' WHERE resolution_status IS NULL"
+            ))
+    if "remark" not in columns:
+        logger.info("Migrating database: add crash_reports.remark")
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE crash_reports ADD COLUMN remark TEXT"
+            ))
     # create_all 不会给已存在的表补索引，这里显式创建（幂等）。
     _new_indexes = [
         ("ix_crash_upload_time", "crash_reports", "upload_time"),
         ("ix_crash_game_name", "crash_reports", "game_name"),
         ("ix_crash_platform", "crash_reports", "platform"),
         ("ix_crash_status", "crash_reports", "status"),
+        ("ix_crash_resolution_status", "crash_reports", "resolution_status"),
         ("ix_crash_symbol_package_id", "crash_reports", "symbol_package_id"),
         ("ix_symbol_game_name", "symbol_packages", "game_name"),
         ("ix_symbol_platform", "symbol_packages", "platform"),

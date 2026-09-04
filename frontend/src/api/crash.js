@@ -2,9 +2,15 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api' })
 
-export function uploadCrash(file) {
+export function uploadCrash(file, options = {}) {
   const form = new FormData()
   form.append('file', file)
+  if (options.remark) {
+    form.append('remark', options.remark)
+  }
+  if (options.resolution_status) {
+    form.append('resolution_status', options.resolution_status)
+  }
   return api.post('/crashes/upload', form)
 }
 
@@ -34,4 +40,8 @@ export function getAnalysisLog(id, offset = 0) {
 
 export function deleteCrash(id) {
   return api.delete(`/crashes/${encodeURIComponent(id)}`)
+}
+
+export function updateCrash(id, payload) {
+  return api.patch(`/crashes/${encodeURIComponent(id)}`, payload)
 }

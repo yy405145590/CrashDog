@@ -18,16 +18,50 @@
           <el-descriptions-item label="崩溃类型">
             <el-tag size="small" type="danger">{{ crash.crash_type }}</el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="状态">
+          <el-descriptions-item label="解析状态">
             <el-tag size="small" :type="statusType(crash.status)">{{ statusLabel(crash.status) }}</el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="错误信息" :span="3">
-            <code>{{ crash.error_message }}</code>
+          <el-descriptions-item label="解决状态">
+            <el-tag size="small" :type="resolutionType(crash.resolution_status)">{{ resolutionLabel(crash.resolution_status) }}</el-tag>
+            <el-button
+              link
+              type="primary"
+              size="small"
+              style="margin-left: 8px"
+              :loading="updatingResolution"
+              @click="handleToggleResolution"
+            >
+              {{ crash.resolution_status === 'resolved' ? '标为未解决' : '标为已解决' }}
+            </el-button>
           </el-descriptions-item>
           <el-descriptions-item label="崩溃线程">{{ crash.crashed_thread }}</el-descriptions-item>
           <el-descriptions-item label="上传时间">{{ formatTime(crash.upload_time) }}</el-descriptions-item>
+          <el-descriptions-item label="错误信息" :span="3">
+            <code>{{ crash.error_message }}</code>
+          </el-descriptions-item>
+          <el-descriptions-item label="备注" :span="3">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px">
+              <div style="white-space: pre-wrap; flex: 1; color: #606266">{{ crash.remark || '暂无备注' }}</div>
+              <el-button link type="primary" size="small" @click="handleEditRemark">编辑</el-button>
+            </div>
+          </el-descriptions-item>
         </el-descriptions>
       </el-card>
+
+      <el-dialog v-model="remarkDialogVisible" title="编辑备注" width="520px" :close-on-click-modal="false">
+        <el-input
+          v-model="remarkDraft"
+          type="textarea"
+          :rows="5"
+          maxlength="2000"
+          show-word-limit
+          placeholder="请输入备注，例如：复现步骤、处理进展、负责人"
+        />
+        <template #footer>
+          <el-button @click="remarkDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="updatingRemark" @click="handleSaveRemark">保存</el-button>
+        </template>
+      </el-dialog>
 
       <!-- 符号匹配 -->
       <el-card shadow="never" style="margin-bottom: 16px">
@@ -210,7 +244,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getCrash, triggerAnalysis, getCrashStatus, getAnalysisLog, getAnalyses } from '../api/crash'
+import { getCrash, triggerAnalysis, getCrashStatus, getAnalysisLog, getAnalyses, updateCrash } from '../api/crash'
 import { resymbolicate, listSymbols } from '../api/symbol'
 import { formatTime } from '../utils/datetime'
 
@@ -227,6 +261,10 @@ const logPanelRef = ref(null)
 const resymbolicating = ref(false)
 const selectedSymbolId = ref(null)
 const symbolOptions = ref([])
+const remarkDialogVisible = ref(false)
+const remarkDraft = ref('')
+const updatingRemark = ref(false)
+const updatingResolution = ref(false)
 let pollTimer = null
 let logOffset = 0
 
@@ -369,6 +407,47 @@ const STATUS_MAP = {
 }
 function statusType(s) { return STATUS_MAP[s]?.type ?? 'info' }
 function statusLabel(s) { return STATUS_MAP[s]?.label ?? s }
+
+const RESOLUTION_MAP = {
+  unresolved: { label: '未解决', type: 'warning' },
+  resolved: { label: '已解决', type: 'success' },
+}
+function resolutionType(s) { return RESOLUTION_MAP[s]?.type ?? 'info' }
+function resolutionLabel(s) { return RESOLUTION_MAP[s]?.label ?? (s || '未解决') }
+
+async function handleToggleResolution() {
+  if (!crash.value) return
+  const next = crash.value.resolution_status === 'resolved' ? 'unresolved' : 'resolved'
+  updatingResolution.value = true
+  try {
+    const { data } = await updateCrash(crashId, { resolution_status: next })
+    crash.value.resolution_status = data.resolution_status
+    ElMessage.success(next === 'resolved' ? '已标为已解决' : '已标为未解决')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '更新状态失败')
+  } finally {
+    updatingResolution.value = false
+  }
+}
+
+function handleEditRemark() {
+  remarkDraft.value = crash.value?.remark || ''
+  remarkDialogVisible.value = true
+}
+
+async function handleSaveRemark() {
+  updatingRemark.value = true
+  try {
+    const { data } = await updateCrash(crashId, { remark: remarkDraft.value?.trim() || '' })
+    crash.value.remark = data.remark
+    remarkDialogVisible.value = false
+    ElMessage.success('备注已保存')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '保存备注失败')
+  } finally {
+    updatingRemark.value = false
+  }
+}
 
 function severityType(s) {
   const m = { Critical: 'danger', High: 'warning', Medium: '', Low: 'success' }

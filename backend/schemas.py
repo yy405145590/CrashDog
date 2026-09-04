@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, field_serializer, field_validator
 
 
 def _serialize_utc_datetime(value: datetime) -> str:
@@ -18,6 +18,8 @@ class CrashSummary(BaseModel):
     id: str
     upload_time: datetime
     status: str
+    resolution_status: str = "unresolved"
+    remark: Optional[str] = None
     game_name: Optional[str] = None
     build_version: Optional[str] = None
     error_message: Optional[str] = None
@@ -25,6 +27,11 @@ class CrashSummary(BaseModel):
     crashed_thread: Optional[str] = None
     platform: Optional[str] = None
     symbol_package_id: Optional[str] = None
+
+    @field_validator("resolution_status", mode="before")
+    @classmethod
+    def _default_resolution(cls, v):
+        return v or "unresolved"
 
     @field_serializer("upload_time")
     def serialize_upload_time(self, value: datetime) -> str:
@@ -74,6 +81,11 @@ class AnalysisResponse(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     agent_type: Optional[str] = None
+
+
+class CrashUpdateRequest(BaseModel):
+    remark: Optional[str] = None
+    resolution_status: Optional[str] = None
 
 
 class StatusResponse(BaseModel):

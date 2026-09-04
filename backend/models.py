@@ -13,12 +13,15 @@ class CrashReport(Base):
         Index("ix_crash_game_name", "game_name"),
         Index("ix_crash_platform", "platform"),
         Index("ix_crash_status", "status"),
+        Index("ix_crash_resolution_status", "resolution_status"),
         Index("ix_crash_symbol_package_id", "symbol_package_id"),
     )
 
     id = Column(String, primary_key=True)
     upload_time = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     status = Column(String, default="uploaded")
+    resolution_status = Column(String, default="unresolved", nullable=False, server_default="unresolved")
+    remark = Column(Text, nullable=True)
     game_name = Column(String, nullable=True)
     build_version = Column(String, nullable=True)
     svn_revision = Column(String, nullable=True)

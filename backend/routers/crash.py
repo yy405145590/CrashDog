@@ -3,14 +3,14 @@ import logging
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, defer
 
 from .. import config
 from ..database import get_db
 from ..models import CrashReport
-from ..schemas import CrashDetail, CrashListResponse, CrashSummary, GuidEntry, StatusResponse, SymbolMatchEntry
+from ..schemas import CrashDetail, CrashListResponse, CrashSummary, CrashUpdateRequest, GuidEntry, StatusResponse, SymbolMatchEntry
 from ..services.crash_parser import extract_zip, parse_crash_directory
 from ..services.guid_extractor import extract_guids_from_dmp
 from ..services.symbolizer import find_symbol_package_matches, resolve_pdb_path, symbolicate_minidump
@@ -19,10 +19,35 @@ router = APIRouter(prefix="/api/crashes", tags=["crashes"])
 logger = logging.getLogger(__name__)
 
 
+def _normalize_resolution_status(value: str | None) -> str | None:
+    if value is None:
+        return None
+    v = value.strip().lower()
+    # 兼容中文输入
+    if v in ("已解决", "resolved", "solved", "done"):
+        return "resolved"
+    if v in ("未解决", "unresolved", "open", "pending"):
+        return "unresolved"
+    return None
+
+
 @router.post("/upload", response_model=CrashSummary)
-async def upload_crash(file: UploadFile, db: Session = Depends(get_db)):
+async def upload_crash(
+    file: UploadFile,
+    remark: str | None = Form(default=None),
+    resolution_status: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(400, "请上传 .zip 文件")
+
+    normalized_resolution = _normalize_resolution_status(resolution_status) if resolution_status else None
+    if resolution_status and normalized_resolution is None:
+        raise HTTPException(400, "resolution_status 仅支持 unresolved(未解决)/resolved(已解决)")
+    if remark is not None:
+        remark = remark.strip() or None
+        if remark and len(remark) > 2000:
+            raise HTTPException(400, "备注过长，最多 2000 字符")
 
     logger.info("Crash upload started: filename=%s", file.filename)
     config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -77,6 +102,8 @@ async def upload_crash(file: UploadFile, db: Session = Depends(get_db)):
     crash = CrashReport(
         id=parsed["id"],
         status="parsed",
+        resolution_status=normalized_resolution or "unresolved",
+        remark=remark,
         game_name=parsed["game_name"],
         build_version=parsed["build_version"],
         platform=parsed["platform"],
@@ -124,6 +151,7 @@ def list_crashes(
     game_name: str | None = None,
     platform: str | None = None,
     status: str | None = None,
+    resolution_status: str | None = None,
     search: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -143,6 +171,11 @@ def list_crashes(
         base = base.filter(CrashReport.platform == platform)
     if status:
         base = base.filter(CrashReport.status == status)
+    if resolution_status:
+        normalized = _normalize_resolution_status(resolution_status)
+        if normalized is None:
+            raise HTTPException(400, "resolution_status 仅支持 unresolved(未解决)/resolved(已解决)")
+        base = base.filter(CrashReport.resolution_status == normalized)
     if search:
         like = f"%{search}%"
         base = base.filter(
@@ -151,6 +184,7 @@ def list_crashes(
                 CrashReport.error_message.like(like),
                 CrashReport.build_version.like(like),
                 CrashReport.crashed_thread.like(like),
+                CrashReport.remark.like(like),
             )
         )
     total = base.order_by(None).count()
@@ -185,6 +219,35 @@ def get_crash(crash_id: str, db: Session = Depends(get_db)):
         for match in find_symbol_package_matches(raw_module_guids, db)
     ]
     return detail
+
+
+@router.patch("/{crash_id}", response_model=CrashDetail)
+def update_crash(crash_id: str, payload: CrashUpdateRequest, db: Session = Depends(get_db)):
+    crash = db.query(CrashReport).filter_by(id=crash_id).first()
+    if not crash:
+        raise HTTPException(404, "崩溃记录不存在")
+
+    updated_fields = payload.model_fields_set
+    if not updated_fields:
+        raise HTTPException(400, "没有可更新的字段")
+
+    if "remark" in updated_fields:
+        remark = payload.remark.strip() if payload.remark else None
+        if remark and len(remark) > 2000:
+            raise HTTPException(400, "备注过长，最多 2000 字符")
+        crash.remark = remark or None
+
+    if "resolution_status" in updated_fields:
+        normalized = _normalize_resolution_status(payload.resolution_status) if payload.resolution_status else None
+        if normalized is None:
+            raise HTTPException(400, "resolution_status 仅支持 unresolved(未解决)/resolved(已解决)")
+        crash.resolution_status = normalized
+
+    db.commit()
+    db.refresh(crash)
+    logger.info("Crash updated: crash_id=%s fields=%s", crash_id, sorted(updated_fields))
+    # 复用详情组装逻辑，保证返回 module_guids / symbol_matches
+    return get_crash(crash_id, db)
 
 
 @router.get("/{crash_id}/status", response_model=StatusResponse)
