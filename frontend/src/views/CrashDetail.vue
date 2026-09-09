@@ -63,6 +63,48 @@
         </template>
       </el-dialog>
 
+      <!-- 截图 -->
+      <el-card shadow="never" style="margin-bottom: 16px">
+        <template #header>
+          <div style="display: flex; justify-content: space-between; align-items: center">
+            <strong>截图（{{ screenshots.length }}）</strong>
+            <el-button
+              type="primary"
+              size="small"
+              :loading="uploadingShots"
+              @click="triggerDetailShotSelect"
+            >
+              添加截图
+            </el-button>
+          </div>
+        </template>
+        <div @paste="handleDetailPaste">
+          <input
+            ref="detailShotInputRef"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+            multiple
+            hidden
+            @change="handleDetailShotSelect"
+          />
+          <div v-if="screenshots.length" style="display: flex; gap: 12px; flex-wrap: wrap">
+            <div v-for="(s, i) in screenshots" :key="s.id" class="detail-shot">
+              <el-image
+                :src="s.url"
+                :preview-src-list="previewUrls"
+                :initial-index="i"
+                fit="cover"
+                style="width: 100%; height: 120px; display: block"
+                preview-teleported
+              />
+              <span class="shot-remove" @click="handleDeleteShot(s)">×</span>
+              <div class="shot-name" :title="s.filename">{{ s.filename || '截图' }} · {{ formatSize(s.file_size) }}</div>
+            </div>
+          </div>
+          <el-empty v-else description="暂无截图，可点击「添加截图」或在此卡片内粘贴（Ctrl+V）" />
+        </div>
+      </el-card>
+
       <!-- 符号匹配 -->
       <el-card shadow="never" style="margin-bottom: 16px">
         <template #header>
@@ -243,8 +285,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { getCrash, triggerAnalysis, getCrashStatus, getAnalysisLog, getAnalyses, updateCrash } from '../api/crash'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { getCrash, triggerAnalysis, getCrashStatus, getAnalysisLog, getAnalyses, updateCrash, uploadScreenshots, deleteScreenshot } from '../api/crash'
 import { resymbolicate, listSymbols } from '../api/symbol'
 import { formatTime } from '../utils/datetime'
 
@@ -265,8 +307,15 @@ const remarkDialogVisible = ref(false)
 const remarkDraft = ref('')
 const updatingRemark = ref(false)
 const updatingResolution = ref(false)
+const screenshots = ref([])
+const uploadingShots = ref(false)
+const detailShotInputRef = ref(null)
+const MAX_SHOTS = 10
+const MAX_SHOT_BYTES = 10 * 1024 * 1024
 let pollTimer = null
 let logOffset = 0
+
+const previewUrls = computed(() => screenshots.value.map(s => s.url))
 
 const envInfo = computed(() => {
   if (!crash.value?.crash_context_json) return null
@@ -291,6 +340,7 @@ async function fetchData() {
     const { data } = await getCrash(crashId)
     crash.value = data
     analyses.value = data.analyses || []
+    screenshots.value = data.screenshots || []
     if (!selectedSymbolId.value && data.symbol_matches?.length) {
       selectedSymbolId.value = data.symbol_matches[0].symbol_package_id
     }
@@ -449,6 +499,83 @@ async function handleSaveRemark() {
   }
 }
 
+function formatSize(bytes) {
+  if (bytes == null) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+function triggerDetailShotSelect() {
+  detailShotInputRef.value?.click()
+}
+
+function filterShotFiles(files) {
+  const ok = []
+  for (const file of files) {
+    if (!file.type?.startsWith('image/')) {
+      ElMessage.error(`文件 ${file.name || ''} 不是图片，已跳过`)
+      continue
+    }
+    if (file.size > MAX_SHOT_BYTES) {
+      ElMessage.error(`图片 ${file.name || ''} 超过 10MB，已跳过`)
+      continue
+    }
+    if (screenshots.value.length + ok.length >= MAX_SHOTS) {
+      ElMessage.warning(`截图最多保留 ${MAX_SHOTS} 张`)
+      break
+    }
+    ok.push(file)
+  }
+  return ok
+}
+
+async function sendShotFiles(files) {
+  const valid = filterShotFiles(files)
+  if (!valid.length) return
+  uploadingShots.value = true
+  try {
+    await uploadScreenshots(crashId, valid)
+    const { data } = await getCrash(crashId)
+    screenshots.value = data.screenshots || []
+    ElMessage.success('截图上传成功')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '截图上传失败')
+  } finally {
+    uploadingShots.value = false
+  }
+}
+
+function handleDetailShotSelect(e) {
+  sendShotFiles(Array.from(e.target.files || []))
+  e.target.value = ''
+}
+
+function handleDetailPaste(e) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  const files = []
+  for (const item of items) {
+    if (item.type?.startsWith('image/')) {
+      const f = item.getAsFile()
+      if (f) files.push(f)
+    }
+  }
+  if (files.length) {
+    e.preventDefault()
+    sendShotFiles(files)
+  }
+}
+
+async function handleDeleteShot(s) {
+  try {
+    await ElMessageBox.confirm(`确定删除截图 ${s.filename || ''}？`, '确认', { type: 'warning' })
+    await deleteScreenshot(crashId, s.id)
+    screenshots.value = screenshots.value.filter(x => x.id !== s.id)
+    ElMessage.success('已删除')
+  } catch {}
+}
+
 function severityType(s) {
   const m = { Critical: 'danger', High: 'warning', Medium: '', Low: 'success' }
   return m[s] ?? 'info'
@@ -499,6 +626,38 @@ onUnmounted(stopPolling)
 
 .cursor-blink {
   animation: blink 1s step-end infinite;
+}
+
+.detail-shot {
+  position: relative;
+  width: 180px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #f5f7fa;
+}
+.detail-shot .shot-remove {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 22px;
+  height: 22px;
+  line-height: 20px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+  border-bottom-left-radius: 4px;
+}
+.detail-shot .shot-remove:hover { background: #f56c6c; }
+.detail-shot .shot-name {
+  font-size: 12px;
+  color: #606266;
+  padding: 4px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @keyframes blink {

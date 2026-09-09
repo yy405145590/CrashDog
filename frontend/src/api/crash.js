@@ -11,6 +11,9 @@ export function uploadCrash(file, options = {}) {
   if (options.resolution_status) {
     form.append('resolution_status', options.resolution_status)
   }
+  for (const shot of options.screenshots || []) {
+    form.append('screenshots', shot, shot.name || 'screenshot.png')
+  }
   return api.post('/crashes/upload', form)
 }
 
@@ -44,4 +47,20 @@ export function deleteCrash(id) {
 
 export function updateCrash(id, payload) {
   return api.patch(`/crashes/${encodeURIComponent(id)}`, payload)
+}
+
+export function uploadScreenshots(id, files) {
+  const form = new FormData()
+  for (const f of files) {
+    form.append('screenshots', f, f.name || 'screenshot.png')
+  }
+  return api.post(`/crashes/${encodeURIComponent(id)}/screenshots`, form)
+}
+
+export function deleteScreenshot(id, screenshotId) {
+  return api.delete(`/crashes/${encodeURIComponent(id)}/screenshots/${screenshotId}`)
+}
+
+export function screenshotUrl(id, screenshotId) {
+  return `/api/crashes/${encodeURIComponent(id)}/screenshots/${screenshotId}`
 }

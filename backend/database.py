@@ -26,6 +26,7 @@ def get_db():
 
 def init_db():
     logger.info("Initializing database: %s", config.DATABASE_URL)
+    from . import models  # noqa: F401 -- 确保所有表都已注册到 Base.metadata
     Base.metadata.create_all(bind=engine)
     from sqlalchemy import inspect, text
     insp = inspect(engine)
@@ -70,6 +71,7 @@ def init_db():
         ("ix_symbol_platform", "symbol_packages", "platform"),
         ("ix_symbol_upload_time", "symbol_packages", "upload_time"),
         ("ix_symbol_guid_package_id", "symbol_guids", "symbol_package_id"),
+        ("ix_screenshot_crash_id", "crash_screenshots", "crash_id"),
     ]
     with engine.begin() as conn:
         for name, table, column in _new_indexes:

@@ -27,6 +27,7 @@ class CrashSummary(BaseModel):
     crashed_thread: Optional[str] = None
     platform: Optional[str] = None
     symbol_package_id: Optional[str] = None
+    screenshot_count: int = 0
 
     @field_validator("resolution_status", mode="before")
     @classmethod
@@ -58,6 +59,22 @@ class CrashDetail(CrashSummary):
     module_guids: list[GuidEntry] = []
     symbol_matches: list[SymbolMatchEntry] = []
     analyses: list[AnalysisResponse] = []
+    screenshots: list[ScreenshotInfo] = []
+
+
+class ScreenshotInfo(BaseModel):
+    id: int
+    filename: Optional[str] = None
+    content_type: Optional[str] = None
+    file_size: Optional[int] = None
+    upload_time: datetime
+    url: str = ""
+
+    @field_serializer("upload_time")
+    def serialize_upload_time(self, value: datetime) -> str:
+        return _serialize_utc_datetime(value)
+
+    model_config = {"from_attributes": True}
 
 
 class AnalysisResponse(BaseModel):

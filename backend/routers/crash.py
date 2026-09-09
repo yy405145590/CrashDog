@@ -1,16 +1,18 @@
 import json
 import logging
 import shutil
+import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, defer
 
 from .. import config
 from ..database import get_db
-from ..models import CrashReport
-from ..schemas import CrashDetail, CrashListResponse, CrashSummary, CrashUpdateRequest, GuidEntry, StatusResponse, SymbolMatchEntry
+from ..models import CrashReport, CrashScreenshot
+from ..schemas import CrashDetail, CrashListResponse, CrashSummary, CrashUpdateRequest, GuidEntry, ScreenshotInfo, StatusResponse, SymbolMatchEntry
 from ..services.crash_parser import extract_zip, parse_crash_directory
 from ..services.guid_extractor import extract_guids_from_dmp
 from ..services.symbolizer import find_symbol_package_matches, resolve_pdb_path, symbolicate_minidump
@@ -31,11 +33,103 @@ def _normalize_resolution_status(value: str | None) -> str | None:
     return None
 
 
+_CONTENT_TYPE_EXTS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
+
+
+def _screenshot_dir(crash_id: str) -> Path:
+    return config.SCREENSHOT_DIR / crash_id
+
+
+def _resolve_screenshot_ext(filename: str | None, content_type: str | None) -> str | None:
+    if filename and "." in filename:
+        ext = "." + filename.rsplit(".", 1)[-1].lower()
+        if ext in config.ALLOWED_SCREENSHOT_EXTS:
+            return ext
+    if content_type:
+        ext = _CONTENT_TYPE_EXTS.get(content_type.split(";")[0].strip().lower())
+        if ext:
+            return ext
+    return None
+
+
+def _screenshot_info(shot: CrashScreenshot) -> ScreenshotInfo:
+    return ScreenshotInfo(
+        id=shot.id,
+        filename=shot.filename,
+        content_type=shot.content_type,
+        file_size=shot.file_size,
+        upload_time=shot.upload_time,
+        url=f"/api/crashes/{shot.crash_id}/screenshots/{shot.id}",
+    )
+
+
+async def _save_screenshots(
+    db: Session,
+    crash_id: str,
+    files: list[UploadFile],
+    existing_count: int = 0,
+) -> list[CrashScreenshot]:
+    """校验并落盘截图，返回已持久化的记录。调用前需保证 crash 已存在。"""
+    if not files:
+        return []
+    if existing_count + len(files) > config.MAX_SCREENSHOTS_PER_CRASH:
+        raise HTTPException(400, f"截图过多，单个崩溃最多保留 {config.MAX_SCREENSHOTS_PER_CRASH} 张")
+
+    contents: list[tuple[UploadFile, bytes, str]] = []
+    for f in files:
+        data = await f.read()
+        if not data:
+            raise HTTPException(400, f"截图 {f.filename or ''} 为空文件")
+        if len(data) > config.MAX_SCREENSHOT_BYTES:
+            raise HTTPException(
+                400,
+                f"截图 {f.filename or ''} 超过 {config.MAX_SCREENSHOT_BYTES // (1024 * 1024)}MB 上限",
+            )
+        ext = _resolve_screenshot_ext(f.filename, f.content_type)
+        if ext is None:
+            raise HTTPException(400, f"截图 {f.filename or ''} 格式不支持，仅支持 PNG/JPG/GIF/WebP/BMP")
+        contents.append((f, data, ext))
+
+    target_dir = _screenshot_dir(crash_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[CrashScreenshot] = []
+    try:
+        for f, data, ext in contents:
+            stored_name = f"{uuid.uuid4().hex}{ext}"
+            (target_dir / stored_name).write_bytes(data)
+            shot = CrashScreenshot(
+                crash_id=crash_id,
+                filename=f.filename,
+                stored_filename=stored_name,
+                content_type=f.content_type,
+                file_size=len(data),
+            )
+            db.add(shot)
+            saved.append(shot)
+        db.commit()
+    except Exception:
+        db.rollback()
+        for shot in saved:
+            (target_dir / shot.stored_filename).unlink(missing_ok=True)
+        raise
+    for shot in saved:
+        db.refresh(shot)
+    logger.info("Screenshots saved: crash_id=%s count=%s", crash_id, len(saved))
+    return saved
+
+
 @router.post("/upload", response_model=CrashSummary)
 async def upload_crash(
     file: UploadFile,
     remark: str | None = Form(default=None),
     resolution_status: str | None = Form(default=None),
+    screenshots: list[UploadFile] | None = File(default=None),
     db: Session = Depends(get_db),
 ):
     if not file.filename or not file.filename.endswith(".zip"):
@@ -85,6 +179,8 @@ async def upload_crash(
     if existing:
         db.delete(existing)
         db.flush()
+        # 同 ID 重新上传时，历史截图记录随级联删除，磁盘文件这里一并清理
+        shutil.rmtree(_screenshot_dir(parsed["id"]), ignore_errors=True)
 
     module_guids = []
     if parsed.get("has_minidump") and parsed.get("minidump_path"):
@@ -141,7 +237,11 @@ async def upload_crash(
     db.commit()
     db.refresh(crash)
     logger.info("Crash upload completed: crash_id=%s", crash.id)
-    return crash
+
+    saved_shots = await _save_screenshots(db, crash.id, screenshots or [])
+    summary = CrashSummary.model_validate(crash)
+    summary.screenshot_count = len(saved_shots)
+    return summary
 
 
 @router.get("", response_model=CrashListResponse)
@@ -194,7 +294,37 @@ def list_crashes(
         .limit(page_size)
         .all()
     )
-    return CrashListResponse(total=total, items=items)
+    # 批量聚合截图数，避免每条记录一次 COUNT
+    shot_counts: dict[str, int] = {}
+    ids = [c.id for c in items]
+    if ids:
+        shot_counts = dict(
+            db.query(CrashScreenshot.crash_id, func.count(CrashScreenshot.id))
+            .filter(CrashScreenshot.crash_id.in_(ids))
+            .group_by(CrashScreenshot.crash_id)
+            .all()
+        )
+    return CrashListResponse(
+        total=total,
+        items=[
+            CrashSummary(
+                id=c.id,
+                upload_time=c.upload_time,
+                status=c.status,
+                resolution_status=c.resolution_status or "unresolved",
+                remark=c.remark,
+                game_name=c.game_name,
+                build_version=c.build_version,
+                error_message=c.error_message,
+                crash_type=c.crash_type,
+                crashed_thread=c.crashed_thread,
+                platform=c.platform,
+                symbol_package_id=c.symbol_package_id,
+                screenshot_count=shot_counts.get(c.id, 0),
+            )
+            for c in items
+        ],
+    )
 
 
 @router.get("/{crash_id}", response_model=CrashDetail)
@@ -218,6 +348,13 @@ def get_crash(crash_id: str, db: Session = Depends(get_db)):
         SymbolMatchEntry(**match)
         for match in find_symbol_package_matches(raw_module_guids, db)
     ]
+    shots = (
+        db.query(CrashScreenshot)
+        .filter_by(crash_id=crash_id)
+        .order_by(CrashScreenshot.upload_time.asc(), CrashScreenshot.id.asc())
+        .all()
+    )
+    detail.screenshots = [_screenshot_info(s) for s in shots]
     return detail
 
 
@@ -250,6 +387,71 @@ def update_crash(crash_id: str, payload: CrashUpdateRequest, db: Session = Depen
     return get_crash(crash_id, db)
 
 
+@router.post("/{crash_id}/screenshots", response_model=list[ScreenshotInfo])
+async def upload_screenshots(
+    crash_id: str,
+    screenshots: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+):
+    crash = db.query(CrashReport).filter_by(id=crash_id).first()
+    if not crash:
+        raise HTTPException(404, "崩溃记录不存在")
+    if not screenshots:
+        raise HTTPException(400, "请至少选择一张截图")
+    existing_count = db.query(func.count(CrashScreenshot.id)).filter_by(crash_id=crash_id).scalar() or 0
+    saved = await _save_screenshots(db, crash_id, screenshots, existing_count)
+    return [_screenshot_info(s) for s in saved]
+
+
+@router.get("/{crash_id}/screenshots", response_model=list[ScreenshotInfo])
+def list_screenshots(crash_id: str, db: Session = Depends(get_db)):
+    crash = db.query(CrashReport).filter_by(id=crash_id).first()
+    if not crash:
+        raise HTTPException(404, "崩溃记录不存在")
+    shots = (
+        db.query(CrashScreenshot)
+        .filter_by(crash_id=crash_id)
+        .order_by(CrashScreenshot.upload_time.asc(), CrashScreenshot.id.asc())
+        .all()
+    )
+    return [_screenshot_info(s) for s in shots]
+
+
+@router.get("/{crash_id}/screenshots/{screenshot_id}")
+def get_screenshot(crash_id: str, screenshot_id: int, db: Session = Depends(get_db)):
+    shot = (
+        db.query(CrashScreenshot)
+        .filter_by(id=screenshot_id, crash_id=crash_id)
+        .first()
+    )
+    if not shot:
+        raise HTTPException(404, "截图不存在")
+    path = _screenshot_dir(crash_id) / shot.stored_filename
+    if not path.is_file():
+        raise HTTPException(404, "截图文件已丢失")
+    return FileResponse(
+        path,
+        media_type=shot.content_type or "application/octet-stream",
+        filename=shot.filename or shot.stored_filename,
+    )
+
+
+@router.delete("/{crash_id}/screenshots/{screenshot_id}")
+def delete_screenshot(crash_id: str, screenshot_id: int, db: Session = Depends(get_db)):
+    shot = (
+        db.query(CrashScreenshot)
+        .filter_by(id=screenshot_id, crash_id=crash_id)
+        .first()
+    )
+    if not shot:
+        raise HTTPException(404, "截图不存在")
+    (_screenshot_dir(crash_id) / shot.stored_filename).unlink(missing_ok=True)
+    db.delete(shot)
+    db.commit()
+    logger.info("Screenshot deleted: crash_id=%s screenshot_id=%s", crash_id, screenshot_id)
+    return {"detail": "已删除"}
+
+
 @router.get("/{crash_id}/status", response_model=StatusResponse)
 def get_status(crash_id: str, db: Session = Depends(get_db)):
     crash = db.query(CrashReport).filter_by(id=crash_id).first()
@@ -271,6 +473,7 @@ def delete_crash(crash_id: str, db: Session = Depends(get_db)):
             shutil.rmtree(p)
     if crash.zip_path:
         Path(crash.zip_path).unlink(missing_ok=True)
+    shutil.rmtree(_screenshot_dir(crash_id), ignore_errors=True)
 
     db.delete(crash)
     db.commit()

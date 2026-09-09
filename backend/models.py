@@ -42,6 +42,7 @@ class CrashReport(Base):
     module_guids_json = Column(Text, nullable=True)
 
     analyses = relationship("AnalysisReport", back_populates="crash", cascade="all, delete-orphan")
+    screenshots = relationship("CrashScreenshot", back_populates="crash", cascade="all, delete-orphan")
     symbol_package = relationship("SymbolPackage", back_populates="crash_reports")
 
 
@@ -101,3 +102,20 @@ class AnalysisReport(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     crash = relationship("CrashReport", back_populates="analyses")
+
+
+class CrashScreenshot(Base):
+    __tablename__ = "crash_screenshots"
+    __table_args__ = (
+        Index("ix_screenshot_crash_id", "crash_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    crash_id = Column(String, ForeignKey("crash_reports.id"), nullable=False)
+    filename = Column(String, nullable=True)
+    stored_filename = Column(String, nullable=False)
+    content_type = Column(String, nullable=True)
+    file_size = Column(Integer, nullable=True)
+    upload_time = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    crash = relationship("CrashReport", back_populates="screenshots")

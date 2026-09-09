@@ -5,6 +5,7 @@ PROJECT_DIR = BASE_DIR.parent
 
 UPLOAD_DIR = BASE_DIR / "uploads"
 CRASH_DIR = BASE_DIR / "crashes"
+SCREENSHOT_DIR = BASE_DIR / "screenshots"
 TEMP_DIR = PROJECT_DIR / "tmp"
 SYMBOL_DIR = BASE_DIR / "symbols"
 LOG_DIR = PROJECT_DIR / "logs"
@@ -23,3 +24,8 @@ COPILOT_TIMEOUT = 600
 SOURCE_DIR = str(PROJECT_DIR / "QingCheng")
 
 LOG_TAIL_LINES = 200
+
+# 截图上传限制
+ALLOWED_SCREENSHOT_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024
+MAX_SCREENSHOTS_PER_CRASH = 10

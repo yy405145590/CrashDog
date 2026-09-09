@@ -74,6 +74,12 @@
             <span style="color: #606266">{{ row.remark || '-' }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="截图" width="70">
+          <template #default="{ row }">
+            <el-tag v-if="row.screenshot_count" size="small" type="info">{{ row.screenshot_count }} 张</el-tag>
+            <span v-else style="color: #c0c4cc">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="上传时间" width="170">
           <template #default="{ row }">{{ formatTime(row.upload_time) }}</template>
         </el-table-column>
@@ -104,7 +110,8 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="uploadDialogVisible" title="上传崩溃 ZIP" width="520px" :close-on-click-modal="false">
+    <el-dialog v-model="uploadDialogVisible" title="上传崩溃 ZIP" width="560px" :close-on-click-modal="false" @closed="resetUploadShots">
+      <div @paste="handlePasteShots">
       <el-upload
         ref="uploadRef"
         v-model:file-list="uploadFileList"
@@ -119,6 +126,28 @@
           <div style="color: #909399; font-size: 12px; margin-top: 8px">仅支持 .zip 文件，一次上传一个</div>
         </template>
       </el-upload>
+      <div style="margin-top: 12px">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px">
+          <span style="font-size: 13px; color: #606266">截图（可选，最多 {{ MAX_SHOTS }} 张）</span>
+          <el-button size="small" @click="triggerShotSelect">选择图片</el-button>
+        </div>
+        <input
+          ref="shotInputRef"
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+          multiple
+          hidden
+          @change="handleShotSelect"
+        />
+        <div v-if="uploadShots.length" style="display: flex; gap: 8px; flex-wrap: wrap">
+          <div v-for="(s, i) in uploadShots" :key="s.key" class="shot-thumb">
+            <img :src="s.url" alt="截图预览" />
+            <span class="shot-remove" @click="removeUploadShot(i)">×</span>
+            <div class="shot-name">{{ s.file.name }}</div>
+          </div>
+        </div>
+        <div v-else style="color: #909399; font-size: 12px">可点击「选择图片」，或在此弹窗内按 Ctrl+V 直接粘贴截图</div>
+      </div>
       <el-input
         v-model="uploadRemark"
         type="textarea"
@@ -132,6 +161,7 @@
         <el-option label="未解决" value="unresolved" />
         <el-option label="已解决" value="resolved" />
       </el-select>
+      </div>
       <template #footer>
         <el-button @click="uploadDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="uploading" @click="handleConfirmUpload">确认上传</el-button>
@@ -165,6 +195,65 @@ const uploadRemark = ref('')
 const uploadResolution = ref('unresolved')
 const uploading = ref(false)
 const uploadRef = ref(null)
+
+const MAX_SHOTS = 10
+const MAX_SHOT_BYTES = 10 * 1024 * 1024
+const shotInputRef = ref(null)
+const uploadShots = ref([])
+let shotKey = 0
+
+function triggerShotSelect() {
+  shotInputRef.value?.click()
+}
+
+function addShotFiles(files) {
+  for (const file of files) {
+    if (!file.type?.startsWith('image/')) {
+      ElMessage.error(`文件 ${file.name || ''} 不是图片，已跳过`)
+      continue
+    }
+    if (file.size > MAX_SHOT_BYTES) {
+      ElMessage.error(`图片 ${file.name || ''} 超过 10MB，已跳过`)
+      continue
+    }
+    if (uploadShots.value.length >= MAX_SHOTS) {
+      ElMessage.warning(`截图最多 ${MAX_SHOTS} 张`)
+      break
+    }
+    uploadShots.value.push({ key: ++shotKey, file, url: URL.createObjectURL(file) })
+  }
+}
+
+function handleShotSelect(e) {
+  addShotFiles(Array.from(e.target.files || []))
+  e.target.value = ''
+}
+
+function handlePasteShots(e) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  const files = []
+  for (const item of items) {
+    if (item.type?.startsWith('image/')) {
+      const f = item.getAsFile()
+      if (f) files.push(f)
+    }
+  }
+  if (files.length) {
+    e.preventDefault()
+    addShotFiles(files)
+  }
+}
+
+function removeUploadShot(i) {
+  const [s] = uploadShots.value.splice(i, 1)
+  if (s) URL.revokeObjectURL(s.url)
+}
+
+function resetUploadShots() {
+  for (const s of uploadShots.value) URL.revokeObjectURL(s.url)
+  uploadShots.value = []
+}
 
 function handleSearch() {
   page.value = 1
@@ -223,12 +312,14 @@ async function handleConfirmUpload() {
     await uploadCrash(rawFile, {
       remark: uploadRemark.value?.trim() || undefined,
       resolution_status: uploadResolution.value,
+      screenshots: uploadShots.value.map(s => s.file),
     })
     ElMessage.success('上传并解析成功')
     uploadDialogVisible.value = false
     uploadFileList.value = []
     uploadRemark.value = ''
     uploadResolution.value = 'unresolved'
+    resetUploadShots()
     if (uploadRef.value) uploadRef.value.clearFiles()
     page.value = 1
     await fetchCrashes()
@@ -288,4 +379,41 @@ onMounted(fetchCrashes)
 
 <style scoped>
 :deep(.clickable-row) { cursor: pointer; }
+.shot-thumb {
+  position: relative;
+  width: 96px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #f5f7fa;
+}
+.shot-thumb img {
+  width: 100%;
+  height: 64px;
+  object-fit: cover;
+  display: block;
+}
+.shot-remove {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 20px;
+  height: 20px;
+  line-height: 18px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  border-bottom-left-radius: 4px;
+}
+.shot-remove:hover { background: #f56c6c; }
+.shot-name {
+  font-size: 11px;
+  color: #909399;
+  padding: 2px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 </style>

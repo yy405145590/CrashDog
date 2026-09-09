@@ -98,6 +98,7 @@ Invoke-RobocopyChecked -Source (Join-Path $Root "backend") -Destination (Join-Pa
     (Join-Path $Root "backend\uploads"),
     (Join-Path $Root "backend\crashes"),
     (Join-Path $Root "backend\symbols"),
+    (Join-Path $Root "backend\screenshots"),
     (Join-Path $Root "backend\logs"),
     (Join-Path $Root "backend\__pycache__"),
     (Join-Path $Root "backend\.pytest_cache"),
@@ -132,7 +133,7 @@ if ($IncludeProjectData) {
             )
         }
     }
-    foreach ($dir in @("backend\uploads", "backend\crashes", "backend\symbols")) {
+    foreach ($dir in @("backend\uploads", "backend\crashes", "backend\symbols", "backend\screenshots")) {
         $source = Join-Path $Root $dir
         if (Test-Path $source) {
             Copy-Item -Path $source -Destination (Join-Path $PackageRoot $dir) -Recurse -Force
@@ -153,7 +154,7 @@ $RuntimePythonDir = Join-Path $PackageRoot "runtime\python"
 Invoke-RobocopyChecked -Source $PythonBasePrefix -Destination $RuntimePythonDir -ExtraArgs @("/XD", (Join-Path $PythonBasePrefix "Doc"), (Join-Path $PythonBasePrefix "tcl"), "/XF", "*.pyc", "*.pyo")
 Invoke-RobocopyChecked -Source (Join-Path $Root ".venv\Lib\site-packages") -Destination (Join-Path $RuntimePythonDir "Lib\site-packages") -ExtraArgs @("/XF", "*.pyc", "*.pyo")
 
-foreach ($dir in @("logs", "tmp", "backend\uploads", "backend\crashes", "backend\symbols")) {
+foreach ($dir in @("logs", "tmp", "backend\uploads", "backend\crashes", "backend\symbols", "backend\screenshots")) {
     New-Item -ItemType Directory -Path (Join-Path $PackageRoot $dir) -Force | Out-Null
 }
 

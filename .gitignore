@@ -68,6 +68,9 @@ UECC-*/
 backend/crashes/**
 !backend/crashes/
 !backend/crashes/.gitkeep
+backend/screenshots/**
+!backend/screenshots/
+!backend/screenshots/.gitkeep
 *.dmp
 *.mdmp
 *.dump
